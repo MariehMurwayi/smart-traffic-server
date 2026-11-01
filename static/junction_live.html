@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Traffic Junction</title>
+<style>
+:root{--bg:#f5f6f4;--fg:#1b1f1d;--card:#e6e9e5;--muted:#5d655f;--grass:#bcd3b0;--road:#3f4442;--line:#e9e3b4;--red:#d93a3a;--green:#22a559}
+@media (prefers-color-scheme: dark){:root{--bg:#141816;--fg:#e8ece9;--card:#222825;--muted:#9aa49d;--grass:#1f3322;--road:#2b2f2d;--line:#b9b27a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:"Trebuchet MS",Verdana,sans-serif;padding:16px;display:flex;justify-content:center}
+main{width:100%;max-width:520px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:14px;margin:0 0 12px}
+canvas{display:block;border-radius:10px;margin:0 auto;max-width:100%}
+.banner{margin:12px 0;padding:10px 12px;border-radius:8px;background:var(--card);font-size:15px}
+.banner.emg{background:var(--red);color:#fff;font-weight:bold}
+.chips{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.chip{background:var(--card);border-radius:8px;padding:8px;text-align:center;border:2px solid transparent}
+.chip.go{border-color:var(--green)}
+.chip b{display:block;font-size:22px}
+.chip span{font-size:13px;color:var(--muted)}
+.note{color:var(--muted);font-size:13px;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>Smart traffic junction</h1>
+<p class="sub">Live view of the latest reading from your sensors.</p>
+<canvas id="c" aria-label="Four-way junction with moving vehicles"></canvas>
+<div id="status" class="banner">Connecting to the server</div>
+<div class="chips" id="chips"></div>
+<p class="note" id="note"></p>
+</main>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d'),S=400;
+const ANG=[-Math.PI/2,0,Math.PI/2,Math.PI],NAMES=['A','B','C','D'],COL=['#2f8fd8','#e0872b','#8a63d2','#d8508f'];
+const STOP=48,GAP=17,V=75,MAXQ=10,CLEAR=1.6;
+let roads=NAMES.map(()=>({cars:[]})),ctl={mode:'clear',t:0,g:-1,emg:false,next:null};
+let lastTime=null,fails=0,demo=false,reading=null,last=0,acc=0,demoT=0;
+function fit(){const r=Math.min(cv.parentElement.clientWidth,520),d=window.devicePixelRatio||1;cv.style.width=r+'px';cv.style.height=r+'px';cv.width=cv.height=Math.round(r*d);ctx.setTransform(cv.width/S,0,0,cv.width/S,0,0)}
+function waiting(i){return roads[i].cars.filter(c=>!c.passed).length}
+function applyReading(d){
+  reading=d;
+  NAMES.forEach((n,i)=>{
+    const target=Math.min(MAXQ,d.counts[n]||0),cars=roads[i].cars;
+    while(waiting(i)<target){const l=cars[cars.length-1];cars.push({d:l?Math.max(205,l.d+GAP):205,passed:false})}
+    while(waiting(i)>target){for(let k=cars.length-1;k>=0;k--){if(!cars[k].passed){cars.splice(k,1);break}}}
+  });
+  ctl.mode='clear';ctl.t=CLEAR;ctl.g=-1;ctl.emg=false;
+  ctl.next={g:NAMES.indexOf(d.chosen),time:d.green||5,emg:!!d.emergency};
+}
+function fakeReading(){
+  const v=[1,2,3,4,5,6,7,8,9].sort(()=>Math.random()-0.5).slice(0,4),counts={},levels={};
+  NAMES.forEach((n,i)=>{counts[n]=v[i];levels[n]=v[i]>=7?'High':v[i]>=4?'Medium':'Low'});
+  const mx=Math.max(...v),ch=NAMES[v.indexOf(mx)],emg=Math.random()<0.25;
+  return{counts,levels,chosen:ch,green:emg?10:Math.min(20,Math.round(3+1.5*mx)),emergency:emg,time:new Date().toLocaleTimeString()};
+}
+async function poll(){
+  try{
+    const r=await fetch('/api/latest',{cache:'no-store'});
+    if(!r.ok)throw new Error('bad');
+    const d=await r.json();
+    fails=0;demo=false;
+    if(d&&d.counts&&d.time!==lastTime){lastTime=d.time;applyReading(d)}
+  }catch(e){fails++;if(fails>=2&&!demo){demo=true;demoT=0}}
+}
+function step(dt){
+  if(demo){demoT-=dt;if(demoT<=0){demoT=14;applyReading(fakeReading())}}
+  if(ctl.mode==='clear'){
+    if(ctl.next){ctl.t-=dt;if(ctl.t<=0){const n=ctl.next;ctl.next=null;ctl.mode='green';ctl.g=n.g;ctl.t=n.time;ctl.emg=n.emg}}
+  }else{
+    ctl.t-=dt;
+    if(ctl.t<=0){ctl.mode='clear';ctl.g=-1;ctl.emg=false;ctl.t=0}
+  }
+  roads.forEach((r,i)=>{
+    const go=ctl.mode==='green'&&ctl.g===i,cars=r.cars;
+    cars.forEach((c,k)=>{
+      let minD=-1e9;if(k>0)minD=cars[k-1].d+GAP;
+      if(!c.passed&&!go)minD=Math.max(minD,STOP);
+      c.d=Math.max(c.d-V*dt,minD);
+      if(c.d<STOP-3)c.passed=true;
+    });
+    r.cars=cars.filter(c=>c.d>-215);
+  });
+}
+function P(i,d,lat){const a=ANG[i];return[200+d*Math.cos(a)-lat*Math.sin(a),200+d*Math.sin(a)+lat*Math.cos(a)]}
+function draw(){
+  const cs=getComputedStyle(document.documentElement);
+  ctx.fillStyle=cs.getPropertyValue('--grass');ctx.fillRect(0,0,S,S);
+  ctx.fillStyle=cs.getPropertyValue('--road');ctx.fillRect(0,165,S,70);ctx.fillRect(165,0,70,S);
+  ctx.strokeStyle=cs.getPropertyValue('--line');ctx.lineWidth=2;ctx.setLineDash([12,10]);
+  [[0,200,165,200],[235,200,S,200],[200,0,200,165],[200,235,200,S]].forEach(l=>{ctx.beginPath();ctx.moveTo(l[0],l[1]);ctx.lineTo(l[2],l[3]);ctx.stroke()});
+  ctx.setLineDash([]);
+  for(let i=0;i<4;i++){
+    ctx.strokeStyle='#fff';ctx.lineWidth=3;
+    const a=P(i,39,1),b=P(i,39,34);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+    const go=ctl.mode==='green'&&ctl.g===i,lp=P(i,44,44);
+    ctx.fillStyle='#111';ctx.beginPath();ctx.arc(lp[0],lp[1],9,0,7);ctx.fill();
+    ctx.fillStyle=go?'#22d36b':'#f04444';ctx.beginPath();ctx.arc(lp[0],lp[1],6,0,7);ctx.fill();
+    const tp=P(i,186,-17);ctx.fillStyle='#fff';ctx.font='bold 14px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(NAMES[i],tp[0],tp[1]);
+    roads[i].cars.forEach(c=>{
+      const p=P(i,c.d,16);ctx.save();ctx.translate(p[0],p[1]);ctx.rotate(ANG[i]+Math.PI);
+      ctx.fillStyle=COL[i];ctx.fillRect(-8,-4.5,16,9);ctx.fillStyle='rgba(255,255,255,.55)';ctx.fillRect(-1,-3.5,4,7);ctx.restore();
+    });
+  }
+}
+const chips=document.getElementById('chips'),st=document.getElementById('status'),note=document.getElementById('note');
+chips.innerHTML=NAMES.map(n=>'<div class="chip"><span>Road '+n+'</span><b>0</b><span>-</span></div>').join('');
+function ui(){
+  [...chips.children].forEach((el,i)=>{
+    const n=NAMES[i],spans=el.querySelectorAll('span');
+    el.querySelector('b').textContent=reading?reading.counts[n]:0;
+    spans[1].textContent=reading&&reading.levels?reading.levels[n]:'-';
+    el.classList.toggle('go',ctl.mode==='green'&&ctl.g===i);
+  });
+  if(!reading){st.textContent=demo?'Demo mode':'Waiting for the first reading';st.className='banner'}
+  else if(ctl.mode==='green'){st.textContent=(ctl.emg?'Emergency: ':'')+'Road '+NAMES[ctl.g]+' is green for '+Math.ceil(ctl.t)+'s';st.className='banner'+(ctl.emg?' emg':'')}
+  else{st.textContent=ctl.next?'All red, clearing the junction':'All red, waiting for the next reading';st.className='banner'}
+  note.textContent=demo?'The server is not reachable, so this is demo data. Start it with python app.py.':(reading?'Latest reading from the server at '+reading.time:'');
+}
+function loop(ts){
+  const dt=Math.min(0.05,(ts-last)/1000||0);last=ts;step(dt);draw();acc+=dt;if(acc>0.15){ui();acc=0}
+  requestAnimationFrame(loop);
+}
+window.addEventListener('resize',fit);
+fit();poll();setInterval(poll,2000);requestAnimationFrame(loop);
+</script>
+</body>
+</html>

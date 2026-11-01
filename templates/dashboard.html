@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Smart Traffic Dashboard</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f2f4f8; margin: 0; }
+  header { background: #1b4b8a; color: #fff; padding: 14px 20px; font-size: 20px; }
+  main { max-width: 900px; margin: 16px auto; padding: 0 12px; }
+  #cards { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .card { flex: 1; min-width: 150px; padding: 12px; border-radius: 8px; color: #fff; }
+  .Low { background: #2e9e5b; } .Medium { background: #e08a1e; } .High { background: #d63b3b; }
+  .box { background: #fff; border-radius: 8px; padding: 12px; margin-top: 14px; }
+  #alert { display: none; background: #b00020; color: #fff; padding: 12px; border-radius: 8px;
+           margin-top: 14px; font-weight: bold; }
+  #bars { display: flex; align-items: flex-end; gap: 30px; height: 160px; padding: 10px 20px; }
+  .barwrap { text-align: center; flex: 1; }
+  .bar { background: #3b7dd8; width: 100%; min-height: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border-bottom: 1px solid #ddd; padding: 6px; text-align: center; }
+  tr.emg td { background: #ffe0e0; font-weight: bold; }
+  button { font-size: 15px; padding: 8px 14px; margin: 3px; }
+  .emgbtn { background: #b00020; color: #fff; border: none; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>Smart Traffic Management Dashboard</header>
+<main>
+  <div id="alert"></div>
+  <div class="box"><b>Current signal:</b> <span id="signal">waiting for data...</span></div>
+  <div id="cards"></div>
+  <div class="box"><b>Vehicles waiting per road (latest reading)</b><div id="bars"></div></div>
+  <div class="box">
+    <b>Last 10 cycles</b>
+    <table>
+      <thead><tr><th>Time</th><th>A</th><th>B</th><th>C</th><th>D</th><th>Green road</th><th>Green (s)</th><th>Type</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="box">
+    <button onclick="sendTest()">Send test data</button>
+    <span>(acts like the ESP32 for testing)</span>
+    <div style="margin-top:10px"><b>Emergency vehicle approaching:</b><br>
+      <button class="emgbtn" onclick="sendTest('A')">Road A</button>
+      <button class="emgbtn" onclick="sendTest('B')">Road B</button>
+      <button class="emgbtn" onclick="sendTest('C')">Road C</button>
+      <button class="emgbtn" onclick="sendTest('D')">Road D</button>
+    </div>
+  </div>
+</main>
+
+<script>
+  const ROADS = ["A", "B", "C", "D"];
+
+  async function sendTest(emergencyRoad) {
+    const body = {};
+    ROADS.forEach(r => body[r] = Math.floor(Math.random() * 9));
+    if (emergencyRoad) body.emergency = emergencyRoad;
+    await fetch("/api/counts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    refresh();
+  }
+
+  async function refresh() {
+    const latest = await (await fetch("/api/latest")).json();
+    const hist = await (await fetch("/api/history")).json();
+    if (!latest) return;
+
+    const alertBox = document.getElementById("alert");
+    if (latest.emergency) {
+      alertBox.style.display = "block";
+      alertBox.textContent = "EMERGENCY PRIORITY: Road " + latest.chosen +
+        " has green for " + latest.green + "s (at " + latest.time + ")";
+    } else {
+      alertBox.style.display = "none";
+    }
+
+    document.getElementById("signal").textContent =
+      "Road " + latest.chosen + " GREEN for " + latest.green + "s (at " + latest.time + ")" +
+      (latest.emergency ? " - EMERGENCY" : "");
+
+    document.getElementById("cards").innerHTML = ROADS.map(r =>
+      '<div class="card ' + latest.levels[r] + '"><b>Road ' + r + '</b><br>' +
+      latest.counts[r] + ' vehicles<br>' + latest.levels[r] + '</div>').join("");
+
+    document.getElementById("bars").innerHTML = ROADS.map(r =>
+      '<div class="barwrap"><div class="bar" style="height:' + (latest.counts[r] * 15) + 'px"></div>' +
+      r + ' (' + latest.counts[r] + ')</div>').join("");
+
+    document.getElementById("rows").innerHTML = hist.map(h =>
+      '<tr class="' + (h.emergency ? "emg" : "") + '"><td>' + h.time + '</td><td>' + h.counts.A +
+      '</td><td>' + h.counts.B + '</td><td>' + h.counts.C + '</td><td>' + h.counts.D +
+      '</td><td>' + h.chosen + '</td><td>' + h.green + '</td><td>' +
+      (h.emergency ? "Emergency" : "Normal") + '</td></tr>').join("");
+  }
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>
